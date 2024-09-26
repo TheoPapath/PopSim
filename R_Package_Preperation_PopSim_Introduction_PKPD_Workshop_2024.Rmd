@@ -1,0 +1,62 @@
+---
+title: "PopSim 2024 workshop Exercises - Introduction to Population Pharmacokinetic modeling"
+subtitle: "R Package preperation"
+author: "Theodoros (Theo) Papathanasiou, GSK"
+date: "2024-09-26"
+output: html_document
+---
+
+Please run this part of the code only the first time you are working with the **Introduction to Population Pharmacokinetic modeling** script
+This part of the code will make sure that all required R packages are available to you.
+
+# General R packages
+
+```{r, eval=FALSE}
+
+# install libraries
+install.packages('tidyverse')
+install.packages('knitr')
+install.packages('ggplot2')
+install.packages('xgxr')
+install.packages('data.table')
+install.packages('vpc')
+install.packages('flextable')
+install.packages('caTools')    # for NCA
+install.packages('patchwork')  # for combining plots
+install.packages('plotly')     # for interactive graphs
+install.packages('nlmixr2lib') # needed for addEta()
+install.packages('GGally')     # needed for correlation plots
+install.packages('ggpubr')     # helpful for combining plots in panels
+install.packages('units')
+```
+
+# nlmixr2 specific R packages
+
+Please run the following code chunck **only** if you haven't already done so.
+
+```{r}
+install.packages("nlmixr2",dependencies = TRUE)
+# Checking installation
+nlmixr2::nlmixr2CheckInstall()
+
+# support packages
+install.packages(c("xpose.nlmixr2", # Additional goodness of fit plots
+                                    # baesd on xpose
+                   "nlmixr2targets", # Simplify work with the
+                                     # `targets` package
+                   "babelmixr2", # Convert/run from nlmixr2-based
+                                 # models to NONMEM, Monolix, and
+                                 # initialize models with PKNCA
+                   "nonmem2rx", # Convert from NONMEM to
+                                # rxode2/nlmixr2-based models
+                   "nlmixr2lib", # a model library and model
+                                 # modification functions that
+                                 # complement model piping
+                   "nlmixr2rpt" # Automated Microsoft Word and
+                                # PowerPoint reporting for nlmixr2
+                   ),
+                 repos = c('https://nlmixr2.r-universe.dev',
+                           'https://cloud.r-project.org'))
+
+```
+

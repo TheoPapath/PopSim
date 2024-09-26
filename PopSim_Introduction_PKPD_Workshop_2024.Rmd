@@ -1,0 +1,2180 @@
+---
+title: "PopSim 2024 workshop Exercises - Introduction to Population Pharmacokinetic modeling"
+author:
+- Theodoros (Theo) Papathanasiou (GSK plc)
+- Eva Sverrisdottir (Ascendis Pharma)
+- Daniel Jonker (Ferring Pharmaceuticals)
+- Rasmus Juul Kildemoes (Novo Nordisk A/S)
+- Trine Meldgaard Lund (University of Copenhagen)
+date: "26 September 2024"
+output:
+  html_document:
+    css: styles.css
+    df_print: kable
+    fig_caption: yes
+    fig_height: 6.72
+    fig_width: 9.4
+    theme: readable
+    toc: yes
+    toc_depth: 5
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: sentence
+  chunk_output_type: console
+---
+
+```{r, initial-setup}
+# knitr::opts_knit$set(verbose=T)
+knitr::opts_chunk$set(
+  cache = TRUE
+  # dev = c("png")
+)
+options(knitr.kable.NA = "")
+
+```
+
+```{r popsim-logo, include=T, fig.width=1, fig.height=10, echo = FALSE}
+# htmltools::img(src = knitr::image_uri(file.path(here::here(), 'GSK_logo.png')), 
+#                alt = 'logo', 
+#                style = 'position:fixed; top:0; right:0; padding:10px; width:300px;')
+
+htmltools::img(src = 'https://farmaceutisk-selskab.dk/wp-content/uploads/2021/03/44261803-00003075-001-PopSim2-640x635.png', 
+               alt = 'logo', 
+               style = 'position:fixed; top:0; right:0; padding:10px; width:200px;')
+
+```
+
+# Overview
+
+This tutorial was created based on the warfarin data set, which was originally published in:
+
+```         
+ O’Reilly (1968). Studies on coumarin anticoagulant drugs. Initiation of warfarin therapy without a loading dose. Circulation 1968, 38:169-177.
+```
+
+Warfarin is an anticoagulant normally used in the prevention of thrombosis and thromboembolism, the formation of blood clots in the blood vessels and their migration elsewhere in the body, respectively.
+The data set provides set of plasma warfarin concentrations and Prothrombin Complex Response in thirty normal subjects after a single loading dose.
+A single large loading dose of warfarin sodium, 1.5 mg/kg of body weight, was administered orally to all subjects.
+Measurements were made each 12 or 24h.
+
+The dataset can be accessed using the following link: <https://dataset.lixoft.com/data-set-examples/warfarin-data-set/>
+
+Below, we attach some useful background in pharmacokinetics, and the open-source software we will be using in this tutorial.
+**rxode2/nlmixr2** and **xgxr**
+
+**Pharmacokinetics** <https://pharmacy.ufl.edu/files/2013/01/two-compartment-model.pdf>
+
+**Exploratory Graphics Initiative (xGx)** <https://opensource.nibr.com/xgx/>
+
+**nlmixr2** <https://nlmixr2.org/>
+
+```{r out.width="100px", echo = FALSE}
+url <- "https://blog.nlmixr2.org/img/nlmixr2.png"
+knitr::include_graphics(url)
+```
+
+**rxode2** <https://nlmixr2.github.io/rxode2/>
+
+```{r out.width="100px", echo = FALSE}
+url <- "https://nlmixr2.github.io/rxode2/logo.png"
+knitr::include_graphics(url)
+```
+
+**Interactive Clinical Pharmacology** <https://www.icp.org.nz/>
+
+**ModViz POP** <https://pavanvaddady.shinyapps.io/modvizpop/>
+
+***Acknowledgements*** Many of the nlmixr2 estimation parts of this tutorial were heavily inspired by the course codes developed by Rik Schoemaker.
+These will be presented during the advanced course that will take place in Day 2 of this symposium.
+The material of the advanced course can be freely accessed from this link: <https://blog.nlmixr2.org/courses/page2024/>
+
+The PopSim team would also like to thank the rxode2/nlmxr2 team for value feedback and support for this course <https://blog.nlmixr2.org/>
+
+```{r Knitr setup, cache=TRUE, echo = FALSE, message = FALSE, warning = FALSE, results='hide'}
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE, fig.width = 9.4, fig.height = 6.72)
+
+```
+
+```{r File Setup, echo = FALSE, message = FALSE, warning = FALSE, results='hide' }
+
+remove(list = ls())
+
+# Load libraries
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(xgxr)
+library(nlmixr2)
+library(data.table)
+library(xpose.nlmixr2)
+library(vpc)
+library(flextable)
+library(caTools)    # for NCA
+library(patchwork)  # for combining plots
+library(plotly)     # for interactive graphs
+library(nlmixr2lib) # needed for addEta()
+library(GGally)     # needed for correlation plots
+library(ggpubr)     # helpful for combining plots in panels
+
+## updated
+library(units)
+     # geom_line(data = Res, aes(x=as.numeric(time), y=C1), linewidth=1)
+##
+
+options(dplyr.summarise.inform = FALSE)
+
+theme_set(theme_bw(base_size = 18) +
+            theme(plot.caption = element_text(hjust = 0.5)) +
+            theme(legend.position = 'bottom'))
+center_legend <- list(orientation = "h", x = 0.4, y = -0.2)
+
+run.estimation = F
+
+```
+
+# Hands-on 1
+
+## Understanding your data set
+
+Briefly about the warfarin data set: <br>
+
+-   32 healthy subjects
+-   single oral administration of 1.5 mg/kg
+-   age, weight, and sex recorded
+-   PK sampling from 0.5 h to 120 h post-dose in a subset of subjects (full PK profile, dense samping)
+-   PK sampling from 24 h to 120 h post-dose in a subset of subjects (sparse samping)
+
+<br>
+
+```{r}
+## read in the Warfarin PK-only data set
+PK_dose_data <- warfarin
+
+PK_dose_data <- subset(warfarin, dvid == "cp", select = c(-dvid))
+names(PK_dose_data) <- c("ID", "TIME", "AMT", "DV", "EVID", "WT", "AGE", "SEX")
+
+## add sampling column
+### find subjects with observations in the first 24 h after dosing
+dense_id <- unique(PK_dose_data$ID[PK_dose_data$TIME < 24 & PK_dose_data$TIME > 0]) 
+PK_dose_data$SPARSE <- ifelse(PK_dose_data$ID %in% dense_id, 0, 1)
+ 
+# #ensure dataset has all the necessary columns
+PK_dose_data <- PK_dose_data %>% 
+     # Sex 
+     mutate(SEXf = as.factor(SEX)) %>% 
+     mutate(SEXf = factor(SEXf, labels = c('Female', 'Male'))) %>%
+     mutate(SEX  = ifelse(SEXf == "Female", 0, 1)) %>% 
+     # Sparse sampling
+     mutate(SPARSEf = as.factor(SPARSE)) %>% 
+     mutate(SPARSEf = factor(SPARSEf, labels = c('Dense sampling', 'Sparse sampling'))) %>% 
+     # body weight into tertiles
+     mutate(WTf  = cut(WT, 
+                       breaks = quantile(WT, c(0:3/3)), include.lowest=T, labels = c("Low weight", "Medium weight", "High weight")) ) %>% 
+     mutate(DV_UNIT = ifelse(EVID==0, "ng/mL", NA))
+
+# Create a dosing dataset
+Dose_data <- PK_dose_data %>% filter(EVID == 1)
+# Create a PK dataset
+PKdata    <- PK_dose_data %>% filter(EVID == 0)
+# Create a baseline characheristics dataset
+baseline_char_data <- Dose_data %>% 
+     select(ID, WT, AGE, SEX, SPARSE, SEXf, SPARSEf, WTf) %>% 
+     mutate(ID = as.factor(ID))
+
+
+#units and labels to be used in script
+time_units_dataset = "hours"
+time_units_plot    = "days"
+trtact_label       = "Dose"
+x_label            = "Time after dose (hours)"
+dose_label         = "Dose (mg)"
+conc_units         = paste0("\U003BC","g/mL") # Somewhat complex code, but useful for using the Greek letter mu
+AUC_units          = paste0("h*", conc_units)
+AUC_label          = paste0("AUC (", AUC_units, ")")
+conc_label         = paste0("Concentration (", conc_units, ")")
+cmax_label         = paste0("Cmax (", conc_units, ")")
+warfarin_label     = paste0("Warfarin (", conc_units, ")")
+concnorm_label     = paste0("Normalized Concentration (", conc_units, ")/mg")
+
+```
+
+### Covariate summary
+
+First, it is always a good idea to get a feel of the data you are going to work with.
+
+An excellent resource that lays out the foundation of exploring PK and PK/PD data is the **Exploratory Graphics (xGx)** initiative, which can be accessed through this link:
+
+<https://opensource.nibr.com/xgx/>
+
+A lot of the material presented below have been heavily inspired by **xGx** and we strongly recommend to spend some time on the **xGx** website to get a feeling of how exploratory graphics can be used to help us understand our data.
+
+First, let's construct some baseline characteristics tables.
+
+```{r}
+summary_data <- baseline_char_data %>% 
+     group_by(SPARSEf) %>% 
+     summarise(SEX_proportion = mean(SEX)*100,
+               WT_mean = mean(WT),
+               AGE_mean = mean(AGE),
+               AGE_sd   = sd(AGE)) %>% 
+     mutate_if(is.numeric, round, 1)
+
+# Here, we create a nice looking summary table, using the flextable package. 
+# It is not necessary to undestand flextable, but it is good to be aware that R language is 
+# very versatile and can help up create any outputs we may be interested in.
+summary_data %>% 
+     flextable() %>% 
+     set_header_labels(SPARSEf = "Sampling scheme", 
+                       SEX_proportion = "Proportion male (%)",
+                       WT_mean = "Mean weight (kg)",
+                       AGE_mean = "Mean age (years)",
+                       AGE_sd = "SD age (years)") %>% 
+     set_table_properties(layout = "autofit", width = .7) %>% 
+     align(align = "center", part = "all") %>% 
+     add_header_lines("Table: Summary of baseline characteristics")
+```
+
+<br> We can even change how we summarize the data.
+<br>
+
+```{r message=FALSE}
+summary_data_2 <- baseline_char_data %>% 
+     group_by(SPARSEf, SEXf) %>% 
+     summarise(WT_mean = mean(WT),
+               AGE_mean = mean(AGE),
+               AGE_sd   = sd(AGE)) %>% 
+     mutate_if(is.numeric, round, 1)
+
+summary_data_2 %>% 
+     flextable() %>% 
+     set_header_labels(SPARSEf = "Sampling", 
+                       SEXf = "Sex",
+                       WT_mean = "Mean weight (kg)",
+                       AGE_mean = "Mean age (years)",
+                       AGE_sd = "SD age (years)") %>% 
+     set_table_properties(layout = "autofit", width = .7) %>% 
+     align(align = "center", part = "all") %>% 
+     add_header_lines("Table: Summary of baseline characteristics")
+
+```
+
+<br> We can also create graphical correlation plots <br>
+
+```{r message=FALSE, warning=FALSE}
+GGally::ggpairs(baseline_char_data, 
+                columns = c('WT', 'AGE', "SEXf"),
+                diag = list(continuous = "barDiag"))
+```
+
+<br>
+
+As we can see from the summary table, there are no female subjects in the sparse sampling group.
+Now let's try to take a look at how the PK profiles look like.
+
+<br>
+
+### Pharmacokinetic profiles
+
+Here we can see the our very first exploratory graph of our data.
+Points connected with lines represents the measured plasma concentrations over time for each subject.
+We can already start appreciating the variability in the data (remember, everyone received the same dose!).
+
+<div class="gray-box">
+**Pro tip** This is an interactive graph.
+You can try to zoom in and out to explore different areas of the curve.
+Pay special attention to the absorption phase!
+</div>
+
+```{r}
+my_first_plot <- ggplot(PKdata, aes(x=TIME, y = DV, group = ID)) + 
+     geom_point() + 
+     geom_line() + 
+     labs(x = x_label, y = warfarin_label)
+ggplotly(my_first_plot)
+```
+
+<br>
+
+We can also try to split the data into relevant sub populations For example, in the warfarin data set, we have subjects with either dense or sparse sampling Let's see how these profiles look like.
+
+<br>
+
+```{r}
+my_second_plot <- my_first_plot + facet_wrap(~SPARSEf)
+ggplotly(my_second_plot)
+```
+
+<br>
+
+<div class="gray-box">
+**Coding Tip** Let's change the names of the objects we store the plots to something easier (see the folded R code).
+Let's try to color by Sex.
+See how we combined the code from above to create a similar result
+</div>
+
+<br>
+
+```{r}
+g1 <- ggplot(PKdata, aes(x=TIME, y = DV, group = ID, color = SEXf)) + 
+     geom_point() + 
+     geom_line() + 
+     facet_wrap(~SPARSEf) + 
+     labs(x = "Time after dose (hours)", y = conc_label) + 
+     scale_color_discrete(name = "Sex")
+ggplotly(g1) %>% layout(legend = center_legend)
+
+```
+
+<br>
+
+#### Optional code {.tabset .tabset-fade .tabset-pills}
+
+***Optional code***
+
+The code that follows is optional as many of these steps have been automated.
+The calculations in this part are included for students who are interested to know what happens in the back end of ready-to-use functions that we use throughout these exercises.
+
+Let's create a summary plot - This is what we usually look at after all.
+
+```{r warning = FALSE, message = FALSE}
+sumdata <- PKdata %>% 
+     group_by(SPARSEf, TIME) %>% 
+     summarise(mean.conc = mean(DV),
+               sd.conc = sd(DV), 
+               n.conc = n()) %>% 
+     mutate(se.conc = sd.conc / sqrt(n.conc),
+            lower.ci.conc = mean.conc - qt(1 - (0.05 / 2), n.conc - 1) * se.conc,
+            upper.ci.conc = mean.conc + qt(1 - (0.05 / 2), n.conc - 1) * se.conc)
+
+```
+
+##### Linear scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r message=FALSE}
+
+g2 <- ggplot(sumdata, aes(x=TIME, y = mean.conc)) + 
+     geom_errorbar(aes(ymin = lower.ci.conc, ymax = upper.ci.conc), width = 5) + 
+     geom_point() + 
+     geom_line() + 
+     facet_wrap(~SPARSEf) + 
+     ylim(0, NA) + 
+     labs(x = x_label, y = warfarin_label, caption = "Points with bars represent the mean with 95% Confidence Intervals")
+g2
+```
+
+##### Log scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r message=FALSE}
+
+g3 <- g2 + scale_y_log10(breaks = c(1,2,4,8,16))
+suppressWarnings(print(g3))
+```
+
+#### Automated code {.tabset .tabset-fade .tabset-pills}
+
+Many of the steps under the ***optional code*** section have been automated.
+For example we can create a similar looking plot, using just one line of code from the xgxr package.
+Note that we only use one line of code to plot our the median with 95% confidence intervals.
+Also, we can use some convenient commands for manipulating the names of the x and y axes, as well as change the time unit from hours to days (see folded code) <br>
+
+##### Linear scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r}
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95) + # xGx package
+     facet_wrap(~SPARSEf) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label)
+g
+```
+
+##### Log scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r message=FALSE}
+g1 <- g + xgx_scale_y_log10(breaks = c(1,2,4,8,16)) + 
+     coord_cartesian(ylim = c(1,16))
+
+suppressWarnings(print(g1))
+```
+
+<br>
+
+We can immediately appreciate that the elimination phase in the semi-log scale plot appears linear.
+This can give us some initial information that warfarin distribution kinetics can be described using a 1-compartment pharmacokinetic model.
+More on that during the modeling hands-on session.
+
+<br>
+
+### Exploring covariate effects on PK
+
+When we want to get an initial feeling of how some covariates may influence our drugs pharmacokinetics, we can start by working through some simple exploratory analyses.
+Some common tools in our tool set, is coloring and faceting across different variables.
+This can be done very easily with ggplot and xGx.
+
+```{r}
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV, color = SEXf)) + 
+     xgx_stat_ci(conf_level = .95) + # xGx package
+     facet_wrap(~SPARSEf) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label) + 
+     scale_color_discrete(name = "Sex")
+g
+
+```
+
+<br>
+
+It looks like there is not a big difference between males and females.
+But how about weight?
+
+Here, we use the calculated 'Weight tertile':
+
+```         
+quantile(PK_dose_data$WT, c(0:3/3))
+```
+
+```{r}
+quartiles <- quantile(PK_dose_data$WT, c(0:3/3))
+# Create the data frame with Weight tertile and Weight range
+weight_data <- data.frame(
+  "Weight tertile" = c("Low", "Medium", "High"),
+  "Weight range" = c(
+    paste0(quartiles[1], " to ", quartiles[2], " kg"),
+    paste0(quartiles[2], " to ", quartiles[3], " kg"),
+    paste0(quartiles[3], " to ", quartiles[4], " kg")
+  )
+)
+
+flextable(weight_data) %>%
+  set_header_labels(
+  Weight.tertile = "Weight tertile",
+  Weight.range = "Weight range") %>%
+  width(width = 1.5) %>%
+  align(align = "center", part = "all")
+```
+
+<br>
+
+```{r}
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV, color = WTf)) + 
+     xgx_stat_ci(conf_level = .95) + 
+     facet_wrap(~SPARSEf) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                       units_plot    = time_units_plot) + 
+     labs(y=conc_label) +
+     scale_color_discrete(name = "Weight tertile")
+g
+```
+
+<br>
+
+It looks like there may be an effect of weight on the PK profiles.
+
+It can also be useful to look at the individual profiles one at a time.
+
+<br>
+
+```{r,fig.width=12, fig.height=10}
+g1 <- ggplot(PKdata, aes(x=TIME, y = DV, group = ID, color = SEXf)) + 
+     geom_point() + 
+     geom_line() + 
+     facet_wrap(~ID) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                  units_plot    = time_units_plot) + 
+     labs(y=conc_label) +
+     scale_color_discrete(name = "Sex")
+g1
+```
+
+### Performing a non-compartmental analysis (NCA)
+
+We can always perform simple non-compartmental analysis (NCA) analyses with our PK data.
+
+In in the code snippet below, we construct some basic calculations for deriving the Area Under the Curve (AUC), as well as the maximum observed concentration (Cmax).
+
+```{r, }
+
+# Perform NCA, for additional plots
+NCA <- PKdata %>%
+     group_by(ID) %>%
+     filter(!is.na(DV)) %>%
+     summarize(AUC_last = caTools::trapz(TIME,DV),
+               Cmax     = max(DV)) %>% 
+     mutate(ID = as.factor(ID)) # needed for the join operation below
+
+NCAdat <- suppressMessages(left_join(NCA, baseline_char_data))
+
+NCAdat_dense <- NCAdat %>% filter(SPARSEf == "Dense sampling")
+
+```
+<div class="lightblue-box">
+**Group Question**: Is there anything that we should take into account before exploring the calculated AUC and Cmax?
+By what would the AUC and Cmax calculations be affected?
+</div>
+
+<br>
+
+<div class="gray-box">
+<details>
+<summary>***Hint***</summary>
+
+Remember the structure of our data!
+We have both dense and sparse sampling.
+
+</details>
+</div>
+
+<br>
+
+<div class="lightblue-box">
+
+**Group Question**: Let's take a look at a comparison between the summary exposure metrics (AUC and Cmax) between the two sampling schemes.
+What do we see?
+</div>
+
+<br>
+
+<div class="blue-box">
+<details>
+
+<summary>***Answer***</summary>
+
+There is a clear difference between the exposure metrics.
+The sparse sampling appears to have lower AUC and Cmax.
+The most important thing to remember, is that this is an artifact of the sampling scheme and does not represent some underlying physiological reason.
+We will only use the dense sampling data for the plots that follow, to make sure that we do not introduce bias in our discussions because of the sampling scheme.
+We will see how modeling can help us use the information form the sparse sampling patients in the sections that follow.
+</details>
+</div>
+
+<br>
+
+<div class="gray-box">
+<details>
+<summary>***Pro tip 1***</summary>
+Always consider your sampling scheme when designing a PK clinical pharmacology study.
+</details>
+</div>
+
+<br>
+
+<div class="gray-box">
+<details>
+<summary>***Pro tip 2***</summary>Modeling can help us ***fill in the gaps*** for situations such as this (provided that your PK model does a good job at describing the data of course!).
+We will see how during the modeling exercises that follow.
+</details>
+</div>
+
+<br>
+
+```{r, fig.width=9, fig.height=4}
+
+g_AUC <- ggplot(data = NCAdat, aes(x = SPARSEf, y = AUC_last)) + 
+     geom_boxplot(aes(group = SPARSEf)) + 
+     ylab(AUC_label) + 
+     xlab("Sampling scheme")
+     
+g_Cmax <- ggplot(data = NCAdat, aes(x = SPARSEf, y = Cmax)) + 
+     geom_boxplot(aes(group = SPARSEf)) + 
+     ylab(cmax_label) + 
+     xlab("Sampling scheme")
+
+g_AUC + g_Cmax
+```
+
+### Correlations between exposure metrics and covariates of interest {.tabset .tabset-fade .tabset-pills}
+
+NCA metrics based on full PK profiles (dense sampling)
+
+#### Sex {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=9, fig.height=4}
+g_AUC <- ggplot(data = NCAdat_dense, aes(x = SEXf, y = AUC_last)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(AUC_label) + 
+     xlab("Sex")
+
+g_Cmax <- ggplot(data = NCAdat_dense, aes(x = SEXf, y = Cmax)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(cmax_label) + 
+     xlab("Sex")
+
+g_AUC + g_Cmax 
+
+```
+
+#### Body Weight {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=9, fig.height=4}
+g_AUC <- ggplot(data = NCAdat_dense, aes(x = WTf, y = AUC_last)) + 
+     geom_boxplot(aes(group = WTf)) + 
+     ylab(AUC_label) + 
+     xlab('') + 
+     theme(axis.text.x = element_text(angle = 15, vjust = 0.5, hjust=1))
+
+
+g_Cmax <- ggplot(data = NCAdat_dense, aes(x = WTf, y = Cmax)) + 
+     geom_boxplot(aes(group = WTf)) + 
+     ylab(cmax_label) + 
+     xlab('') + 
+     theme(axis.text.x = element_text(angle = 15, vjust = 0.5, hjust=1))
+g_AUC + g_Cmax
+
+```
+
+#### Body Weight Continuous {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=9.5, fig.height=5}
+g_AUC <- ggplot(data = NCAdat_dense, aes(x = WT, y = AUC_last)) + 
+     geom_point() + 
+     ylab(AUC_label) + 
+     xlab("Body Weight (kg)") + 
+     geom_smooth(formula = y ~ x, method="lm")
+
+g_Cmax <- ggplot(data = NCAdat_dense, aes(x = WT, y = Cmax)) + 
+     geom_point() + 
+     ylab(cmax_label) + 
+     xlab("Body Weight (kg)") + 
+     geom_smooth(formula = y ~ x, method="lm")
+
+g_AUC + g_Cmax
+
+```
+
+#### Body Weight stratified by sex {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=9.5, fig.height=5}
+g_AUC_sex  <- g_AUC  + 
+     aes(color = SEXf) + 
+     scale_color_discrete(name = "Sex")
+g_Cmax_sex <- g_Cmax + aes(color = SEXf) + 
+     scale_color_discrete(name = "Sex")
+
+ggpubr::ggarrange(g_AUC_sex, g_Cmax_sex, common.legend = T)
+
+```
+
+## Understanding PK simulations
+
+Lets us do our first simulation for warfarin.
+Remember, the PK profiles for Warfarin look like this:
+
+```{r}
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95) + # xGx package
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label)
+g
+
+```
+
+Let's build a simulation model.
+First, we set up the system of ordinary differential equations (ODEs).
+One good way to think about ODEs in PK, is to try and conceptualize the "bathtub model"
+
+**Bathtub model concept** <https://www.tcpharm.org/pdf/10.12793/tcp.2015.23.2.42>
+
+```{r}
+## set up the system of differential equations (ODEs)
+odeKA1 <- "
+     CL = TV_CL;
+     V  = TV_V;
+     KA = TV_KA;
+     KE0 = (CL/V);
+     d/dt(depot)   = -KA * depot;
+     d/dt(central) =  KA * depot - KE0*central;
+     C1 = central/V;
+"
+
+## compile the model
+modKA1 <- rxode2(model = odeKA1)
+
+```
+
+**Provide the parameter values** In our first example, we (somewhat randomly) set the absorption rate constant (ka) equal to \~1.3 1/h, Clearance (CL) equal to 0.0675 L/h and the Volume of distribution (V) equal to 15 L.
+
+```{r}
+## provide the parameter values to be simulated:
+Params <- c( TV_KA = 0.5, # 1/h (aborption half-life of 30 minutes)
+             TV_CL = 0.0675,        # L/h
+             TV_V = 15              # L
+)
+```
+
+Subsequently, we need to create an event table.
+The event table stores the dosing information (how much? how often?) and the sampling information (how often?)
+
+For this first example, we will simulate a single dose for simplicity.
+(Remember the actual dosing was done as mg/kg and thus it varies!).
+How much dose (in mg) was given to the subjects?
+Let's look at some quantiles.
+
+```{r}
+# How much dose (in mg) was given to the subjects? (Remember the dosing was done as mg/kg and thus it varies)
+quantile(Dose_data$AMT)
+```
+
+Looks like the median dose was close 100 mg.
+Let's use that dose for our simulation.
+
+Now we have everything we need for our first simulation.
+The simulation is done using the rxSolve command (click on the `Show` button to see the commands).
+
+```{r}
+## create an empty event table that stores both dosing and sampling information :
+ev <- eventTable(amount.units = 'mg', time.units = "hr")
+
+## add a dose to the event table:
+ev$add.dosing(dose = 100) #mg
+
+## add time points to the event table where concentrations will be simulated; these actions are cumulative
+ev$add.sampling(seq(0, 120, 0.1))
+
+## Then solve the system
+##
+## The output from rxSolve is a solved RxODE object,
+##  but by making it a data.frame only the simulated values are kept:
+Res <- data.frame(rxSolve(modKA1,Params,ev))
+```
+
+<br> Now, we can plot the simulated outcomes in the compartments <br>
+
+```{r, fig.width=8, fig.height=8}
+
+g_depot <- ggplot(data = Res, aes(x=time, y=depot)) + 
+     geom_line(linewidth=2) + 
+     labs(x = "Time (hours)", y = 'Simulated Warfarin \namount (mg)', title = 'Simulated amount in depot (dosing) compartment')
+
+g_central <- ggplot(data = Res, aes(x=time, y=C1)) + 
+     geom_line(linewidth=2) + 
+     labs(x = "Time (hours)", y = 'Simulated Warfarin \nconcentrations (ug/mL)', title = "Simulated concentrations in central compartment")
+
+g_depot / g_central
+
+```
+
+<br> Let us now overlay the simulated profile with the observed data: <br>
+
+```{r}
+
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95, geom = list("point","errorbar")) + 
+     geom_line(data = Res, aes(x=as.numeric(time), y=C1), linewidth=1) +
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label)
+g
+
+```
+
+<br> What do you think?
+Is this a good fit for the observed concentration data?
+
+Not so much...
+What if we provide better values?
+
+You may recall our initial estimates:
+
+| Parameters | Estimate |     |
+|-----------:|:---------|-----|
+|   ka (1/h) | 0.5      |     |
+|   CL (L/h) | 0.0675   |     |
+|      V (L) | 15       |     |
+
+Let's update the parameters to:
+
+| Parameters | Estimate |     |
+|-----------:|:---------|-----|
+|   ka (1/h) | 1.4      |     |
+|   CL (L/h) | 0.135    |     |
+|      V (L) | 8        |     |
+
+```         
+Params <- c(TV_KA = log(2) / 0.5, # 1/h (absorption half-life of 30 minutes)
+            TV_CL = 0.135,        # L/h
+            TV_V = 8              # L
+)
+```
+
+<br>
+
+```{r}
+## provide the parameter values to be simulated:
+Params <- c( TV_KA = log(2) / 0.5, # 1/h (absorption half-life of 30 minutes)
+             TV_CL = 0.135,        # L/h
+             TV_V = 8              # L
+)
+
+Res <- data.frame(rxSolve(modKA1,Params,ev))
+
+# Let us overlay the simulated profile with the observed data:
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95, geom = list("point","errorbar")) + 
+     geom_line(data = Res, aes(x=as.numeric(time), y=C1), linewidth=1) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label)
+g
+```
+
+This is much better!
+- By varying the parameters, we can get a better description of the data we have.
+This is what the estimation algorithms do for us.
+By varying all parameters multiple times, we can end up with having a model with parameters that describes our data.
+The goodness of statistical fit can be assessed with the "Objective Function Value", as well as a variety of goodness-of-fit plots that we have at our disposal.
+More on that is described in the modeling sections.
+
+We can also create multiple simulation scenarios, such as multiple dosing, simulations with between subject variability and simulations with random residual error.
+
+### Simulating multiple doses
+
+Here we create a simulation of five 100 mg doses, given once daily (every 24 h).
+Notice that we overlay the observations even though they are from a single dose study.
+This is helpful for making sure that the model captures the data well following the first dose, and importantly, to help us appreciate the accumulation of the drug over time.
+
+```{r}
+
+ev_multiple <- eventTable(amount.units = 'mg', time.units = "hr") %>% 
+     add.dosing(dose=100, 
+                nbr.doses=5,
+                dosing.interval=24)
+     
+
+Res <- data.frame(rxSolve(modKA1,Params,ev_multiple))
+
+# Let us overlay the simulated profile with the observed data:
+g <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95, geom = list("point","errorbar")) + 
+     geom_line(data = Res, aes(x=as.numeric(time), y=C1), linewidth=1) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label)
+g
+
+
+```
+
+### Simulating with inter-individual variability
+
+Population models can go one step further and simulate multiple potential concentration time courses.
+We know that every patient is different, which means that variability in the pharmacokinetic profiles may come from various intrinsic or extrinsic factors.
+With population models, we can simulate different profiles, but assuming that there is some randomness around the structural parameters of the structural model.
+
+These concepts might be somewhat confusing at first, but let's try to use the same model as before, but now simulate 30 patients receiving 100 mg warfarin once daily.
+First, we create a simulation where **only** the clearance (CL) varies.
+If you look at the code you can see that there are parameters for variability on ka and V as well, but the variance is set at 0.0001, which is \~ 0.
+
+```         
+# Simulation with variability in clearance only
+omega <- lotri(eta.CL ~ 0.4^2,
+               eta.V  ~ 0.0001, # Very small value
+               eta.KA ~ 0.0001)`
+```
+
+In the second example, we create a simulation, were **all** parameters are allowed to vary.
+
+```         
+# Simulation with variability in all parameters
+omega <- lotri(eta.CL ~ 0.4^2,
+               eta.V  ~ 0.4^2,
+               eta.KA ~ 0.4^2)
+```
+
+<div class="lightblue-box">
+**Group Question** What do you observe?
+Can you describe the differences between these simulated profiles?
+</div>
+```{r, fig.width=12, fig.height=5}
+
+odeKA1_IIV <- "
+     CL = TV_CL * exp(eta.CL);
+     V  = TV_V  * exp(eta.V);
+     KA = TV_KA * exp(eta.KA);
+     KE0 = (CL/V);
+     d/dt(depot)   = -KA * depot;
+     d/dt(central) =  KA * depot - KE0*central;
+     C1 = central/V * (1+prop.err);
+"
+## compile the model
+modKA1_IIV <- rxode2(model = odeKA1_IIV)
+
+
+## provide the parameter values to be simulated with proportional error
+Params_error <- c( TV_KA = log(2) / 0.5, # 1/h (absorption half-life of 30 minutes)
+             TV_CL = 0.135,        # L/h
+             TV_V = 8,              # L
+             prop.err = 0
+)
+
+
+# Simulation with variability in clearance only
+omega <- lotri(eta.CL ~ 0.4^2,
+               eta.V  ~ 0.0001, # Very small value
+               eta.KA ~ 0.0001)
+
+Res_1 <- data.frame(rxSolve(odeKA1_IIV, Params_error, ev_multiple, omega=omega, nSub=30))
+
+
+# Simulation with variability in all parameters
+omega <- lotri(eta.CL ~ 0.4^2,
+               eta.V  ~ 0.4^2,
+               eta.KA ~ 0.4^2)
+
+Res_2 <- data.frame(rxSolve(odeKA1_IIV, Params_error, ev_multiple, omega=omega, nSub=30))
+
+
+g_1 <- ggplot(data = Res_1, aes(x=as.numeric(time), y=C1, group=sim.id)) + 
+     geom_line(linewidth=1) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(title = "Simulation with variability on CL", y=conc_label) 
+
+g_2 <- ggplot(data = Res_2, aes(x=as.numeric(time), y=C1, group=sim.id)) + 
+     geom_line(linewidth=1) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(title = "Simulation with variability on all parameters", y=conc_label) 
+
+g_1 + g_2
+
+```
+
+# Hands-on 2
+
+## Parameter estimation
+
+### Fit model to data
+
+Now let us do our first parameter estimation (click on the `Show` button to see the commands).
+
+For the following example, we are going to define a one-compartment model, with linear absorption and linear elimination kinetics and fit the model to the warfarin data set.
+Notice that we will only estimate inter-individual variability (IIV) for clearance (eta.cl).
+Notice that we have 'commented-out' the code for estimating IIV in Ka and V. This is because we plan to explore the influence of estimating IIVs in Ka and V later in the course.
+For our residual error model, we choose to start by estimating a proportional error only.
+
+```{r message = FALSE, warning = FALSE, results='hide'}
+# ------------------------------------------------------
+# Run 001. One comp, lin. abs and elim. Eta on CL only - proportional residual error
+# ------------------------------------------------------
+One.comp.KA.ODE <- function() {
+     
+     ini({
+          # Where initial conditions/variables are specified
+          lka  <- log(1.15)  #log ka (1/h)
+          lcl  <- log(0.135) #log Cl (L/h)
+          lv   <- log(8)     #log V (L)
+          prop.err <- 0.15   #proportional error (SD/mean)
+          # add.err  <- 0.6    #additive error (mg/L)
+          # eta.ka ~ 0.5   
+          eta.cl ~ 0.1   
+          # eta.v  ~ 0.1   
+     })
+     
+     model({
+          # Where the model is specified
+          cl <- exp(lcl + eta.cl)
+          v  <- exp(lv)
+          ka <- exp(lka)
+          
+          ## ODE example
+          d/dt(depot)   = -ka * depot # depot is defined as amount (i.e. the unit is mg)
+          d/dt(central) =  ka * depot - (cl/v) * central
+          
+          ## Concentration is calculated
+          cp = central/v
+          ## And is assumed to follow proportional error
+          cp ~ prop(prop.err) # + add(add.err)
+     })
+}
+
+rxClean()
+
+# 
+if(run.estimation == T) {
+#       
+#       ## estimate parameters using nlmixr/FOCEI:
+      run001 <- nlmixr(One.comp.KA.ODE,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)\
+                       #FOCEi options:
+                       foceiControl(print = 20))  #only print every 20th estimation step
+#       # and saved for future use or reference:
+      save(run001, file = "run001.Rdata")
+
+} else {
+
+      load(file = "run001.Rdata")
+}
+
+
+```
+
+We can now take a look at the estimated fixed effect parameters.
+Remember that fixed effects (theta's) are on the log scale, and therefore, the numbers in the 'Est.' column are the log-values, while the back-transformed (exponentiated) values are in the 'Back-transformed (95% CI)' column.
+IIV is presented as %CV in the 'BSV' column (between-subject variabilty).
+
+```{r}
+flextable(run001$parFixed)
+
+```
+
+### Compare model to observed data
+
+We've now estimated parameter estimates but we don't know how well these parameters describe the data.
+Let's simulate concentrations based on the estimated parameters and compare to the observed data.
+We simulate using the same function as in Hands-on 1 (2.2 Understanding PK simulations) `Res <- data.frame(rxSolve(modKA1,Params,ev))`, but we update the parameter estimates (`Params`).
+
+See how in the folded `Code`.
+
+```{r}
+#################################################################################
+## Hands-on assignment:
+## Try to grab the estimated parameters from above, simulate and see how the 
+## model fits the data
+#################################################################################
+
+Estimated_parameters <- exp(run001$fixef)
+# provide the parameter values to be simulated - These come from the model we just estimated above.
+# 
+Params_est <- c(TV_KA = Estimated_parameters[['lka']], # 1/h (aborption half-life of 30 minutes)
+                TV_CL = Estimated_parameters[['lcl']],        # L/h
+                TV_V  = Estimated_parameters[['lv']]              # L
+)
+
+rxClean()
+Res_est <- data.frame(rxSolve(modKA1,
+                              Params_est,
+                              ev))
+```
+
+Let us overlay the simulated profile (`Res_est`) with the observed data (`PKdata`):
+
+```{r message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+# Let us overlay the simulated profile with the observed data:
+g_lin <- ggplot(data = PKdata, aes(x = TIME, y = DV)) + 
+     xgx_stat_ci(conf_level = .95, geom = list("point","errorbar")) + 
+     geom_line(data = Res_est, aes(x=as.numeric(time), y=C1), linewidth=1) + 
+     ylim(0, NA) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label, subtitle = 'Linear y scale')
+
+# Zoom in on the first day
+g_lin_2 <- g_lin + coord_cartesian(xlim = c(0,24)) + labs(y=conc_label, subtitle = 'Linear y scale \nZoom in on the first day')
+
+# log scale
+g_log <- g_lin + xgx_scale_y_log10(breaks = c(1,2,4,8,16)) + coord_cartesian(ylim = c(1,20)) + labs(y=conc_label, subtitle = 'Log y scale')
+
+# Zoom in on the first day
+g_log_2 <- g_log + coord_cartesian(xlim = c(0,24)) + labs(y=conc_label, subtitle = 'Log y scale \nZoom in on the first day')
+
+(g_lin + g_lin_2) / (g_log + g_log_2)
+
+```
+
+<br>
+
+This fit looks pretty good!
+The estimation was a success and now we have a model that describes our data well - at least on a population level.
+
+<div class="lightblue-box">
+**Group Question**: Can we do something to improve the fit?
+</div>
+
+<br>
+
+<div class="blue-box">
+<details>
+
+<summary>***Answer***</summary>
+It looks like the absorption phase is not captured adequately.
+There is a constant model over-prediction that we need to think about.
+Can you see that there is a delay on the appearance of concentrations in plasma as compared to what the model predicts?
+We will try to capture this with some model development exercises below.
+
+
+</details>
+</div>
+
+<br>
+
+The strength of population modeling however, is that we are able to describe all individuals in our dataset - despite their intrinsic and extrinsic differences.
+What do we mean by that?
+
+<br>
+
+Let's see how the individual predictions look like!
+
+```{r, fig.width=8, fig.height=8}
+plot(augPred(run001))
+
+```
+
+Now let's look a bit closer at the individual and population predictions.
+The individual predictions vary, because we made the calculated assumption that the clearance may be different between them, and then we were able to estimate this random difference.
+But the population predictions are clearly different between subjects as well.
+They might not be as variable as the individual predictions, but still...
+Can you guess why?
+
+<br>
+
+<div class="gray-box">
+<details>
+<summary>***Hint***</summary>
+
+Remember the dosing!
+How were our patients dosed?
+Did they all receive the same amount?
+
+</details>
+</div>
+
+<br>
+
+```{r message=FALSE, fig.width=12, fig.height=6}
+augpred_dat <- augPred(run001) 
+
+# -----------------------------------------------------------
+# Somewhat technical code below. Understanding it right now is out of scope for this course
+# augpred_dat does not carry the id forward as expected. As a workaround, we need to create a dataset to map ID to id
+ID_frame = data.frame(ID = unique(run001$ID),
+                      id = unique(augpred_dat$id))
+
+augpred_cov_dat <- augpred_dat %>% 
+     left_join(ID_frame) %>% 
+     mutate(DV   = values,
+            TIME = time) %>% 
+     select(-id) %>% 
+     left_join(baseline_char_data)
+     
+
+# Individual Predictions
+g_ipred <- ggplot(subset(augpred_cov_dat, ind=="Individual"), aes(x=TIME, y=DV, group=ID)) + 
+     geom_line() + 
+     geom_point(data = subset(augpred_cov_dat, ind=="Observed")) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label, subtitle = 'Individual predictions', caption = "Lines are individual predictions \nPoints are observations")
+
+# Population Predictions
+g_pred <- ggplot(subset(augpred_cov_dat, ind=="Population"), aes(x=TIME, y=DV, group=ID)) + 
+     geom_line() + 
+     geom_point(data = subset(augpred_cov_dat, ind=="Observed")) + 
+     xgx_scale_x_time_units(units_dataset = time_units_dataset, 
+                            units_plot    = time_units_plot) + 
+     labs(y=conc_label, subtitle = 'Population predictions', caption = "Lines are population predictions \nPoints are observations")
+
+g_ipred + g_pred
+```
+
+<br> 
+A somewhat more interesting plot may be when we investigate the model predictions when spiting the graph between the sampling schemes.
+
+<div class="lightblue-box">
+**Group question** What do you observe?
+How can we use our model to **fill in the gaps** ?
+</div>
+<br>
+
+```{r, fig.width=12, fig.height=6}
+(g_ipred + facet_wrap(~SPARSEf))
+
+```
+
+<br> Now, let's look at a table with all individual parameter estimates, technically refered to as the Empirical Bayes Estimates (EBEs) <br>
+
+```{r message=FALSE}
+## Extract EBEs from the model object:
+EBEs <- as.data.table(run001) %>% 
+     group_by(ID) %>% 
+     slice(1) %>% 
+     mutate(KA = ka,
+            CL = cl,
+            V  = v) %>%
+     select(ID, KA, CL, V)
+
+# combine to create a table with all individual parameters
+table_dat <- left_join(baseline_char_data, EBEs) %>% 
+     mutate_if(is.numeric, round, 2)
+
+
+table_dat %>% 
+     dplyr::select(ID, WT, AGE, SEXf, SPARSEf, KA, CL, V) %>% 
+     flextable() %>% 
+     set_header_labels(SPARSEf = "Sampling", 
+                       WT = "Weight (kg)",
+                       AGE = "Age (years)",
+                       SEXf = 'Sex',
+                       KA = "Ind. Ka (1/h)",
+                       CL = "Ind. CL (L/h)",
+                       V = "Ind. V (L)") %>% 
+     set_table_properties(layout = "autofit", width = .9) %>% 
+     align(align = "center", part = "all") %>% 
+     footnote(i = 1, j = 6:8,
+                value = as_paragraph(
+                     c("Individual paramter estimates")),
+                ref_symbols = c("a"),
+                part = "header") %>% 
+     valign(valign = "bottom", part = "header") %>% 
+     autofit
+
+```
+<br>
+
+<div class="lightblue-box">
+**Group Question**: Notice that every subject has a different clearance (CL).
+But everyone has the same absorption rate constant (Ka), and Volume of distribution (V).
+Why is that?
+</div>
+
+<br>
+
+<div class="blue-box">
+<details>
+
+<summary>***Answer***</summary>
+
+Remember that we estimated IIV only!
+for clearance!
+This means that we assumed that everyone has the same Ka and V, but different Clearance values.
+Is this the best model we can arrive to?
+Maybe not!
+We will explore more models during the modeling session.
+
+</details>
+</div>
+
+<br>
+
+### Half-life calculation
+
+Can you calculate the individual $t_½$?
+Can you create a histogram of the $t_½$?
+
+```{r}
+# -------------------------------
+# exercise 
+# Can you calculate the individual t 1/2?
+# can you create a histogram of the t 1/2?
+# -------------------------------
+# Answer
+table_dat <- table_dat %>% 
+     mutate(Ke0 = CL/V,              # 1/hours
+            t_half = log(2)/Ke0) %>% # hours
+     mutate_if(is.numeric, round, 3)
+     
+     
+table_dat %>% 
+     dplyr::select(ID, WT, SEXf, SPARSEf, KA, CL, V, Ke0, t_half) %>% 
+     flextable() %>% 
+     set_header_labels(SPARSEf = "Sampling", 
+                       WT = "Weight (kg)",
+                       SEXf = 'Sex',
+                       KA = "Ind. Ka (1/h)",
+                       CL = "Ind. CL (L/h)",
+                       V = "Ind. V (L)",
+                       Ke0 = "Ind. Ke0 (1/h)",
+                       t_half = "Ind. T1/2 (h)") %>% 
+     set_table_properties(layout = "autofit", width = 1) %>% 
+     align(align = "center", part = "all") %>% 
+     footnote(i = 1, j = 6:9,
+                value = as_paragraph(
+                     c("Individual paramter estimates")),
+                ref_symbols = c("a"),
+                part = "header") %>% 
+     valign(valign = "bottom", part = "header") %>% 
+     autofit
+
+ggplot(data = table_dat, aes(x=t_half)) + 
+     geom_histogram(bins = 12, fill = 'gray') + 
+     labs(x = 'Individual half life (h)')
+```
+
+With the histogram, we can certainly appreciate the variability in the calculated $t_½$
+
+### Model-based NCA
+
+Remember that when we were trying to calculate NCA based exposure metrics (AUC and Cavg), we had to think about the sampling scheme, and how that may affect our NCA results.
+Because we have some subjects with full profiles and some with more sparse sampling, we had to compromise and decide that we can only use the full profile data.
+Otherwise we risked introducing bias due to the differences in the sampling scheme!
+
+But look at these simulated profiles above.
+They are almost complete!
+This is because we were able to use the model to construct individual profiles.
+Oftentimes, these model predicted individual profiles are being used to fill in the gaps that may arise due to irregularities in the sample scheme, missing pk samples etc.
+
+Let's try to redo the NCA calculations.
+Now, we will use the model-based individual predicted profiles.
+This means that we can use the entire information from the population we are working with and gain some more power and insights as compared to standard NCA
+
+```{r}
+# Perform NCA, for additional plots
+augpred_dat_ipred <- augpred_cov_dat %>% filter(ind == "Individual")
+
+NCA_model <- augpred_dat_ipred %>%
+     group_by(ID) %>%
+     filter(!is.na(DV)) %>%
+     summarize(AUC_last = caTools::trapz(TIME,DV),
+               Cmax     = max(DV)) %>% 
+     mutate(ID = as.factor(ID)) # needed for the join operation below
+
+NCAdat_model <- suppressMessages(left_join(NCA_model, baseline_char_data))
+
+```
+
+### Correlations between exposure metrics and covariates of interest
+
+NCA metrics based on individual model predicted PK profiles
+
+```{r, fig.width=9, fig.height=4}
+g_AUC <- ggplot(data = NCAdat_model, aes(x = SEXf, y = AUC_last)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(AUC_label) + 
+     xlab("Sex")
+
+g_Cmax <- ggplot(data = NCAdat_model, aes(x = SEXf, y = Cmax)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(cmax_label) + 
+     xlab("Sex")
+
+g_AUC + g_Cmax
+
+```
+
+```{r, fig.width=9.5, fig.height=11}
+
+g_AUC_1 <- ggplot(data = NCAdat_model, aes(x = SEXf, y = AUC_last)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(AUC_label) + 
+     xlab("Sex")
+
+g_Cmax_1 <- ggplot(data = NCAdat_model, aes(x = SEXf, y = Cmax)) + 
+     geom_boxplot(aes(group = SEXf)) + 
+     ylab(cmax_label) + 
+     xlab("Sex")
+
+g_AUC <- ggplot(data = NCAdat_model, aes(x = WT, y = AUC_last)) + 
+     geom_point() + 
+     ylab(AUC_label) + 
+     xlab("Body Weight (kg)") + 
+     geom_smooth(formula = y ~ x, method="lm")
+
+g_Cmax <- ggplot(data = NCAdat_model, aes(x = WT, y = Cmax)) + 
+     geom_point() + 
+     ylab(cmax_label) + 
+     xlab("Body Weight (kg)") + 
+     geom_smooth(formula = y ~ x, method="lm")
+# Stratifying by sex
+
+g_AUC_sex  <- g_AUC  + 
+     aes(color = SEXf) + 
+     scale_color_discrete(name = "Sex")
+g_Cmax_sex <- g_Cmax + aes(color = SEXf) + 
+     scale_color_discrete(name = "Sex")
+
+
+(g_AUC_1 + g_Cmax_1) / (g_AUC + g_Cmax) / (g_AUC_sex + g_Cmax_sex)
+
+```
+
+***Congratulations!*** You just performed your first modeling analysis and model application!
+
+## Model fit diagnostics {.tabset .tabset-fade .tabset-pills}
+
+There are many model diagnostics that modelers have in their toolkit to evaluate the robustness of the models they work with.
+Here, we show some of the most often used ones.
+An excellent reference for model diagnostics can be found in this link: <https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5321813/#psp412161-bib-0008>
+
+```{r}
+## We can use the new xpose package for which xpose.nlmixr provides the link
+## the nlmixr object can be transformed into an xpose object to allow diagnostics with the new xpose package
+## the link between nlmixr and xpose is provided by the xpose.nlmixr package
+## only xpose_data_nlmixr is from xpose.nlmixr, all further commands are from the xpose package
+xpdb.1s <- xpose_data_nlmixr(run001)
+```
+
+### Individual fits {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r}
+# ## Individual fits can be generated using using xpose:
+xpdb.1s <- set_var_types(xpdb.1s,pred = 'PRED')
+ind_plots(xpdb.1s, caption = NULL, ncol = 4, nrow = 4)
+# ## ...use the arrows in the plot window to examine the earlier curves
+```
+
+### DV vs PRED {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Dependent variable (DV; plasma concentrations in this case)) vs model predictions
+
+The data points should be scattered around the identity line (but not necessarily evenly).
+Trends may suggest a modification of structural model, residual error model or interindividual variability model.
+
+```{r warning=FALSE, message=FALSE}
+## dv vs pred plot:
+dv_vs_pred(xpdb.1s,
+           caption = NULL)
+```
+
+### DV vs iPRED {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Dependent variable (DV; plasma concentrations in this case) vs individual model predictions The data points should be scattered around the identity line (but not necessarily evenly).
+Trends may suggest a modification of structural model, residual error model or interindividual variability model.
+
+```{r warning=FALSE, message=FALSE}
+## dv vs ipred plot:
+dv_vs_ipred(xpdb.1s,        #the xpose object
+            caption = NULL) #if not NULL provides the directory where this was run
+```
+
+### CWRES vs time {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Conditional weighted residuals (CWRES) over time.
+Data points should be scattered around the horizontal zero-line (more or less evenly).
+Trends may suggest a modification of structural model, residual error model, or interindividual variability model.
+
+```{r warning=FALSE, message=FALSE}
+## CWRES vs time:
+     res_vs_idv(xpdb.1s,           #the xpose object
+                res = "CWRES",     #examine conditional weighted residuals
+                idv = "TIME",      #as a function of time
+                caption = NULL)    #if not NULL provides the directory where this was run
+```
+
+### IWRES vs time {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Individual weighted residuals (IWRES) over time.
+The data points should be scattered around the horizontal zero-line (more or less evenly).
+Trends may suggest a modification of structural model, residual error model, or interindividual variability model.
+
+```{r warning=FALSE, message=FALSE}
+#Absolute values of individual weighted residual vs time
+absval_res_vs_idv(xpdb.1s,        #the xpose object
+                  res = "IWRES",  #examine absolute values (absval) of individual weighted residuals
+                  idv = "TIME",   #as a function of time
+                  caption = NULL) #if not NULL provides the directory where this was run
+
+## ...this plot shows that there are some issues at the earlier time points that an updated absorption model may fix
+```
+
+This plot shows that there are some issues at the earlier time points.
+This may be something that we can fix using some other absorption model (refer to *Model development* exercises)
+
+### Visual predictive checks {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Visual predictive checks (VPCs) are the golden standard for model evaluation in PK/PD modeling.
+The underlying principle for creating VPC plots is that **simulating** from a model should create similar predictions to what we observed.
+
+When we simulate many times from the same model, the **stochastic (or random)** nature of the model comes into effect.
+This means that if we e.g. simulate a single patient profile 10 times, then we will end up with **10** different (but similar looking) simulated profiles.
+This is because each simulated profile will have different (random) eta values sampled from the eta-distribution.
+If we simulate 10 patient profiles 10 times, then of course we will end up with 100 simulated profiles.
+
+To qualify a model and argue that it describes the data well, what we want to see is that it captures the data central tendency and variability well.
+One way to do this, is first, summarize our data in percentiles (10, 50, and 90th percentiles) and then plot them out.
+Then we simulate with the model (usually 1000 times) and summarize our simulated data in percentiles (10, 50, and 90th percentiles) as well.
+When we overlay the observed percentiles to the simulated precentiles, we end up with the VPC!
+
+Overall, the way to read a VPC, is: *A model that can create simulated percentiles that are in good agreement with the observed percentiles, is a model we can qualify and argue that describes the data well.*
+
+```{r, fig.width=10, fig.height=8}
+#######################################################################
+###                                                                 ###
+###   Visual predictive checks                                      ###
+###                                                                 ###
+#######################################################################
+
+## because the data set uses nominal time points, it is nice to have the bins surround these time points 
+## so that each time point falls in a bin
+
+bin_mids <- sort(unique(PKdata$TIME))
+bin_edges <- bin_mids - c(0, diff(bin_mids) / 2) # puts the edges in the middle of the nominal time points
+
+SimVPC <- vpcSim(
+     run001,                  #the nlmixr object
+     n = 100)
+
+# We need to make some of the variables in upper case for the tools to work
+setnames(SimVPC,c("id","time","sim"),c("ID","TIME","DV"))
+
+vpc_vpc(sim = SimVPC, obs = PKdata, bins=bin_edges,
+        # show = list(obs_dv = TRUE,
+        #             obs_median=TRUE,
+        #             sim_median=FALSE,
+        #             sim_median_ci=TRUE,
+        #             obs_ci=TRUE,
+        #             pi=TRUE),
+        xlab = x_label,
+        ylab = conc_label,
+        title = "VPC for first order absorption PopPK model with linear y axis") + 
+      labs(caption = "The dashed lines are the observed 10th and 90th percentiles 
+           \nThe solid black line is the observed median are predicted percentiles.
+           \nBlue and light blue ribbons are the corresponding 95% confidence intervals"
+           )
+
+```
+
+## Understanding the VPC {.tabset .tabset-fade .tabset-pills}
+
+```{r vpc-deepdive, fig.width=10, fig.height=8}
+# 
+# wrapper <- function(x, ...) {
+#       paste(strwrap(x, ...), collapse = "\n")
+# }
+
+my_caption1 <- 
+"Open circles: observed data. 
+Black line: Median for the observed data. \n\n\n"
+
+vpc1 <- vpc_vpc(sim = SimVPC, obs = PKdata, bins=bin_edges, 
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = FALSE,
+                    obs_ci = FALSE,
+                    pi = FALSE, 
+                    pi_ci = FALSE),
+        xlab = x_label,
+        ylab = conc_label,
+        ) + coord_cartesian(ylim = c(0,21)) + 
+  labs(caption = my_caption1)
+
+my_caption2 <- 
+"Open circles: observed data. 
+Black line: Median for the observed data. 
+Dashed lines: 90% CIs for the observed data. \n\n"
+
+vpc2 <- vpc_vpc(sim = SimVPC, obs = PKdata, bins=bin_edges, 
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = FALSE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = FALSE),
+        xlab = x_label,
+        ylab = conc_label,
+        ) + coord_cartesian(ylim = c(0,21)) + 
+  labs(caption = my_caption2)
+
+my_caption3 <- 
+"Open circles: observed data. 
+Black line: Median for the observed data. 
+Dashed lines: 90% CIs for the observed data.
+Dark blue ribbon: 95% confidence interval of the simulated median. \n"
+
+vpc3 <- vpc_vpc(sim = SimVPC, obs = PKdata, bins=bin_edges,
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = TRUE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = FALSE),
+        xlab = x_label,
+        ylab = conc_label,
+        ) + coord_cartesian(ylim = c(0,21)) + 
+  labs(caption = my_caption3)
+
+my_caption4 <- 
+"Open circles: observed data. 
+Black line: Median for the observed data. 
+Dashed lines: 90% CIs for the observed data.
+Dark blue ribbon: 95% confidence interval of the simulated median. 
+Light blue ribbon: 95% confidence interval of the simulated 10 and 90th percentile."
+
+vpc4 <- vpc_vpc(sim = SimVPC, obs = PKdata, bins=bin_edges,
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = TRUE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = TRUE),
+        xlab = x_label,
+        ylab = conc_label,
+        ) + coord_cartesian(ylim = c(0,21)) + 
+  labs(caption = my_caption4)
+```
+
+### Observed data {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=10, fig.height=8}
+vpc1
+```
+
+### Observed data with observed CIs {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=10, fig.height=8}
+vpc2
+```
+
+### Confidence interval of the simulated median {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=10, fig.height=8}
+vpc3
+```
+
+### Confidence interval of the simulated percentiles {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=10, fig.height=8}
+vpc4
+```
+
+## Model development
+
+Model development is typically a step-wise exercise.Some things that we are looking to explore during model development are:
+
+1.  The IIV model structure
+2.  The residual error model structure,
+3.  The general popPK model structure
+4.  The covariate model
+
+In the following steps, we will add additional IIVs in our model and explore the influence of estimating them by looking at a statistical measure that is called the 'Objective Function Value".
+
+### Intra-individual model
+
+Various random effect models are run in this section.
+Unfold `Code` to see the models.
+
+-   One-compartment models
+
+```{r message = FALSE, warning = FALSE, results='hide'}
+#  ------------------------------------------------------
+# Model 2. Add Eta on Ka
+# ------------------------------------------------------
+if(run.estimation == T) {
+      
+      mod002 <- One.comp.KA.ODE %>% addEta("ka") # Notice that we can simply add and IIV on Ka with the addEta command
+      run002 <- nlmixr(mod002,                   # the model definition
+                       PK_dose_data,             # the data set
+                       est = "focei",            # the estimation algorithm (FOCEi)
+                       #FOCEi options:
+                       foceiControl(print = 20))  # only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run002, file = "~run002.Rdata")
+      
+} else {
+      
+      load(file = "run002.Rdata")      
+}
+
+# ------------------------------------------------------
+# Model 3. Add Eta on V1
+# ------------------------------------------------------
+if(run.estimation == T) {
+      
+      mod003 <- mod002 %>% addEta("v")
+      run003 <- nlmixr(mod003,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run003, file = "run003.Rdata")
+
+} else {
+      
+      load(file = "run003.Rdata")
+}
+
+
+# ----------------------------------------------------------------
+# Model 4. Model based on run003 - Additive residual error only
+# ----------------------------------------------------------------
+if(run.estimation == T) {
+      
+      mod004 <- mod003 %>% addResErr("addSd")
+      run004 <- nlmixr(mod004,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run004, file = "run004.Rdata")
+
+} else {
+      
+      load(file = "run004.Rdata")
+}
+
+# ----------------------------------------------------------------
+# Model 5. Model based on run003 - Combined additive and proportional residual error
+# ----------------------------------------------------------------
+if(run.estimation == T) {
+      
+      mod005 <- mod003 %>% addResErr(c("addSd", "propSd"))
+      run005 <- nlmixr(mod005,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run005, file = "run005.Rdata")
+
+} else {
+      
+      load(file = "run005.Rdata")
+}
+
+```
+
+-   Two-compartment models
+
+```{r message = FALSE, warning = FALSE, results='hide'}
+# ------------------------------------------------------
+# Run 006. Two compartment model
+# ------------------------------------------------------
+Two.comp.KA.ODE <- function() {
+     ini({
+          # Where initial conditions/variables are specified
+          lKA  <- log(1.15)  #log ka (1/h)
+          lCL  <- log(0.135) #log Cl (L/h)
+          lV1  <- log(8)     #log V (L)
+          lQ   <- log(0.5)   #log Q (L/h)
+          lV2  <- log(10)    #log V2 (L/h)
+              
+          eta.KA ~ 0.5   
+          eta.CL ~ 0.1   
+          eta.V1 ~ 0.1   
+          
+          prop.err <- 0.15   #proportional error (SD/mean)
+          add.err  <- 0.6    #additive error (mg/L)
+          
+     })
+     model({
+          # Where the model is specified
+          CL <- exp(lCL + eta.CL)
+          V1 <- exp(lV1 + eta.V1)
+          KA <- exp(lKA + eta.KA)
+          Q  <- exp(lQ)
+          V2 <- exp(lV2)
+          
+          ## ODE example
+          K20 = CL/V1
+          K23 = Q/V1
+          K32 = Q/V2
+          
+          d/dt(depot)   = -KA * depot
+          d/dt(central) =  KA * depot - K23*central + K32*periph - K20 * central
+          d/dt(periph) =                K23*central - K32*periph
+          
+          ## Concentration is calculated
+          cp = central/V1
+          ## And is assumed to follow proportional error
+          cp ~ prop(prop.err) + add(add.err)
+     })
+}
+
+rxClean()
+
+## estimate parameters using nlmixr/FOCEI:
+mod006 <- Two.comp.KA.ODE
+
+if(run.estimation == T) {
+      
+      run006 <- nlmixr(mod006,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)\
+                       #FOCEi options:
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run006, file = "run006.Rdata")
+
+} else {
+      
+      load(file = "run006.Rdata")
+}
+
+# ------------------------------------------------------
+# Model 7. Run006 + Add Eta on V2 and Q
+# ------------------------------------------------------
+mod007 <- mod006 %>% addEta(c("Q", "V2"))
+
+if(run.estimation == T) {
+      
+      run007 <- nlmixr(mod007,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run007, file = "run007.Rdata")
+      
+} else {
+      
+      load(file = "run007.Rdata")
+}
+```
+
+### Structural model
+
+Various absorption models are run in this section.
+Unfold `Code` to see the models.
+
+```{r message = FALSE, warning = FALSE, results='hide'}
+#################################################################################
+##                                                                             ##
+##   Update the model with a single transit compartment                        ##
+##                                                                             ##
+#################################################################################
+
+## One compartment transit model
+One.comp.transit <- function() {
+  ini({
+    # Where initial conditions/variables are specified
+    lktr <- log(1.15)  #log k transit (/h)
+    lcl  <- log(0.135) #log Cl (L/hr)
+    lv   <- log(8)     #log V (L)
+    prop.err <- 0.15   #proportional error (SD/mean)
+    add.err <- 0.6     #additive error (mg/L)
+    eta.ktr ~ 0.5   
+    eta.cl ~ 0.1   
+    eta.v ~ 0.1  
+  })
+  model({
+    cl <- exp(lcl + eta.cl)
+    v  <- exp(lv + eta.v)
+    ktr <- exp(lktr + eta.ktr)
+    # RxODE-style differential equations are supported
+    d/dt(depot)   = -ktr * depot
+    d/dt(central) =  ktr * trans - (cl/v) * central
+    d/dt(trans)   =  ktr * depot - ktr * trans
+    ## Concentration is calculated
+    cp = central/v
+    # And is assumed to follow proportional and additive error
+    cp ~ prop(prop.err) + add(add.err)
+  })
+}
+
+
+# ------------------------------------------------------
+# Model 8. Run005 + Add transit absorption compartment
+# ------------------------------------------------------
+mod008 <- One.comp.transit
+
+if(run.estimation == T) {
+      
+      run008 <- nlmixr(mod008,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 5))  #only print every 5th estimation step
+
+      # and saved for future use or reference:
+      save(run008, file = "run008.Rdata")
+      
+} else {
+      
+      load(file = "run008.Rdata")
+}
+
+```
+
+We can construct tables, to compare the OFV of our different runs
+<br>
+<div class="lightblue-box">
+**Group Question** Based on these results, which model would you choose to bring forward?
+Why?
+</div>
+
+```{r}
+OFV.table <- data.frame(Run = paste0('run00', 1:8),
+                           Description = c('One comp, lin. abs and elim. Eta on CL only - prop. res. error',
+                                           'Run001 + Eta on KA',
+                                           'Run002 + Eta on V',
+                                           'Run003 + add. res. error',
+                                           'Run003 + comb. res.error',
+                                           'Run005 + Two comp. dist.',
+                                           'Run006 + Eta on Q, V2',
+                                           'Run005 + Add 1 transit abs. comp.'),
+                           OFV = c(run001$OBJF,
+                                   run002$OBJF,
+                                   run003$OBJF,
+                                   run004$OBJF,
+                                   run005$OBJF,
+                                   run006$OBJF,
+                                   run007$OBJF,
+                                   run008$OBJF), 
+                        deltaOFV = c(run001$OBJF-run001$OBJF,
+                                     run002$OBJF-run001$OBJF,
+                                     run003$OBJF-run001$OBJF,
+                                     run004$OBJF-run001$OBJF,
+                                     run005$OBJF-run001$OBJF,
+                                     run006$OBJF-run001$OBJF,
+                                     run007$OBJF-run001$OBJF,
+                                     run008$OBJF-run001$OBJF), 
+                        nParam = c(length(run001$fixef)+nrow(run001$omega),
+                                   length(run002$fixef)+nrow(run002$omega),
+                                   length(run003$fixef)+nrow(run003$omega),
+                                   length(run004$fixef)+nrow(run004$omega),
+                                   length(run005$fixef)+nrow(run005$omega),
+                                   length(run006$fixef)+nrow(run006$omega),
+                                   length(run007$fixef)+nrow(run007$omega),
+                                   length(run008$fixef)+nrow(run008$omega)))
+
+OFV.table %>% 
+     flextable() %>% 
+     set_table_properties(layout = "autofit", width = .8) %>% 
+     align(align = "center", part = "header") %>% 
+     autofit
+
+```
+
+### Covariate model development
+
+So far, we have seen how to explore our data, how to estimate model parameters for simple PK models and how to extend our PK model, either with adding additional layers of IIV, or expanding the model complexity to better describe our data.
+
+For our dataset, we have seen that there is a clear influence of weight on our PK.
+This not an unexpected behaviour, even when we adjust our dose by body weight (remember, the doses were given in mg/kg).
+Here, we will do a very brief introduction to covariate model development.
+We will try to estimate body weight effects on clearance and the volume of distribution.
+We have selected to work with run008, as this was the most promising model based on the model evaluations so far.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE, results='hide'}
+
+#############################################################################
+##                                                                         ##
+## Implement body weight covariates                                        ##
+##                                                                         ##
+#############################################################################
+
+## Code is most stable if transformations are carried out in the data file
+## instead of in the model code, especially for SAEM
+## Using standard R syntax:
+PK_dose_data$logWT70 <- log(PK_dose_data$WT/70)
+
+
+# ------------------------------------------------------
+## One compartment transit model with weight on CL
+# ------------------------------------------------------
+One.comp.transit.CL.WT <- function() {
+     ini({
+          # Where initial conditions/variables are specified
+          lktr <- log(1.15)  #log k transit (/h)
+          lcl  <- log(0.15)  #log Cl (L/hr)
+          lv   <- log(7)     #log V (L)
+          ALLC <- 0.75       #allometric exponent cl
+
+          eta.ktr ~ 0.5   
+          eta.cl ~ 0.1   
+          eta.v ~ 0.1   
+          
+          prop.err <- 0.15   #proportional error (SD/mean)
+          add.err <- 0.6     #additive error (mg/L)
+          
+     })
+     model({
+          # scaling on weight
+          cl <- exp(lcl + eta.cl + ALLC * logWT70)
+          v  <- exp(lv + eta.v)
+          ktr <- exp(lktr + eta.ktr)
+          # RxODE-style differential equations are supported
+          d/dt(depot)   = -ktr * depot
+          d/dt(central) =  ktr * trans - (cl/v) * central
+          d/dt(trans)   =  ktr * depot - ktr * trans
+          ## Concentration is calculated
+          cp = central/v
+          # And is assumed to follow proportional and additive error
+          cp ~ prop(prop.err) + add(add.err)
+     })
+}
+
+# ------------------------------------------------------
+# Model 9 Run008 + Weight on CL
+# ------------------------------------------------------
+mod009 <- One.comp.transit.CL.WT
+if(run.estimation == T) {
+      
+      run009 <- nlmixr(mod009,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run009, file = "run009.Rdata")
+      
+} else {
+      
+      load(file = "run009.Rdata")
+}
+
+# ------------------------------------------------------
+## One compartment transit model with weight on CL and V
+# ------------------------------------------------------
+One.comp.transit.CL.V.WT <- function() {
+     ini({
+          # Where initial conditions/variables are specified
+          lktr <- log(1.15)  #log k transit (/h)
+          lcl  <- log(0.15)  #log Cl (L/hr)
+          lv   <- log(7)     #log V (L)
+          ALLC <- 0.75       #allometric exponent cl
+          ALLV <- 1.00       #allometric exponent v
+          
+          eta.ktr ~ 0.5   
+          eta.cl ~ 0.1   
+          eta.v ~ 0.1   
+          
+          prop.err <- 0.15   #proportional error (SD/mean)
+          add.err <- 0.6     #additive error (mg/L)
+          
+     })
+     model({
+          # scaling on weight
+          cl <- exp(lcl + eta.cl + ALLC * logWT70)
+          v  <- exp(lv + eta.v  + ALLV * logWT70)
+          ktr <- exp(lktr + eta.ktr)
+          # RxODE-style differential equations are supported
+          d/dt(depot)   = -ktr * depot
+          d/dt(central) =  ktr * trans - (cl/v) * central
+          d/dt(trans)   =  ktr * depot - ktr * trans
+          ## Concentration is calculated
+          cp = central/v
+          # And is assumed to follow proportional and additive error
+          cp ~ prop(prop.err) + add(add.err)
+     })
+}
+
+# ------------------------------------------------------
+# Model 10 Run010 + Weight on CL and V1
+# ------------------------------------------------------
+mod010 <- One.comp.transit.CL.V.WT
+
+if(run.estimation == T) {
+      
+      run010 <- nlmixr(mod010,          #the model definition
+                       PK_dose_data,             #the data set
+                       est = "focei",            #the estimation algorithm (FOCEi)
+                       foceiControl(print = 20))  #only print every 20th estimation step
+      # and saved for future use or reference:
+      save(run010, file = "run010.Rdata")
+      
+} else {
+      
+      load(file = "run010.Rdata")
+}
+
+```
+
+```{r}
+
+OFV.table_upd <- data.frame(Run = c('run009', 'run010'),
+                           Description = c('Run008 + weight on CL',
+                                           'Run009 + weight on CL and V1'),
+                           OFV = c(run009$OBJF,
+                                   run010$OBJF),
+                           deltaOFV = c(run009$OBJF-run001$OBJF,
+                                        run010$OBJF-run001$OBJF),
+                           nParam = c(length(run009$fixef)+nrow(run009$omega),
+                                      length(run010$fixef)+nrow(run010$omega)))
+
+OFV.table %>% bind_rows(OFV.table_upd) %>% 
+     flextable() %>% 
+     set_table_properties(layout = "autofit", width = .8) %>% 
+     align(align = "center", part = "header") %>% 
+     autofit
+
+```
+
+### Diagnostics comparison {.tabset .tabset-fade .tabset-pills}
+
+Here, we will compare the VPCs for our runs 001, 008 and 010.
+What do you observe?
+Which model captures our data bettter?
+
+```{r, fig.width=18, fig.height=15}
+bin_mids <- sort(unique(PKdata$TIME))
+bin_edges <- bin_mids - c(0, diff(bin_mids) / 2) # puts the edges in the middle of the nominal time points
+
+SimVPC_001 <- vpcSim(
+     run001,                  #the nlmixr object
+     n = 100)
+
+SimVPC_008 <- vpcSim(
+     run008,                  #the nlmixr object
+     n = 100)
+
+SimVPC_010 <- vpcSim(
+     run010,                  #the nlmixr object
+     n = 100)
+
+
+# We need to make some of the variables in upper case for the tools to work
+setnames(SimVPC_001,c("id","time","sim"),c("ID","TIME","DV"))
+setnames(SimVPC_008,c("id","time","sim"),c("ID","TIME","DV"))
+setnames(SimVPC_010,c("id","time","sim"),c("ID","TIME","DV"))
+
+VPC001 <- vpc_vpc(sim = SimVPC_001, obs = PKdata, bins=bin_edges,
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = TRUE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = TRUE),
+        xlab = x_label,              #x-axis label
+        ylab = conc_label,           #y-axis label
+        title = "First order absorption PopPK model\n") + 
+     labs(caption = "Run001")
+
+VPC008 <- vpc_vpc(sim = SimVPC_008, obs = PKdata,bins=bin_edges,
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = TRUE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = TRUE),
+        xlab = x_label,          #x-axis label
+        ylab = conc_label,       #y-axis label
+        title = "Transit compartment absorption\nPopPK model\n") + 
+     labs(caption = "Run008")
+
+VPC010 <- vpc_vpc(sim = SimVPC_010, obs = PKdata,bins=bin_edges,
+        show = list(obs_dv = TRUE,
+                    obs_median = TRUE,
+                    sim_median = FALSE,
+                    sim_median_ci = TRUE,
+                    obs_ci = TRUE,
+                    pi = FALSE, 
+                    pi_ci = TRUE),
+                  xlab = x_label,      #x-axis label
+                  ylab = conc_label,  #y-axis label
+                  title = "Transit compartment absorption PopPK\nmodel with body weight effect on CL and V1") + 
+     labs(caption = "Run010")
+
+```
+
+#### Linear scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+```{r, fig.width=18, fig.height=15}
+(VPC001 + VPC008) / (VPC010 + plot_spacer())
+```
+
+#### Log scale {.tabset .tabset-fade .tabset-pills .unnumbered}
+
+Zooming in the absorption phase.
+We also changed the y-scale to logarithmic.
+
+```{r warning=FALSE, message=FALSE, fig.width=18, fig.height=15}
+((VPC001 + xgx_scale_y_log10() + coord_cartesian(ylim = c(3,20), xlim = c(0, 30))) + 
+(VPC008 + xgx_scale_y_log10() + coord_cartesian(ylim = c(3,20), xlim = c(0, 30)))) /
+((VPC010 + xgx_scale_y_log10() + coord_cartesian(ylim = c(3,20), xlim = c(0, 30))) + 
+      plot_spacer()
+)
+```
+
+
+
+<br> \
+***End of PopSim 2024 workshop Exercises - Introduction to Population Pharmacokinetic modeling.*** 
+<br>
